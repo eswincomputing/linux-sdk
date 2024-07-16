@@ -1,0 +1,527 @@
+From 3d180f1eefd16777d8f07094c94c11396964bdd2 Mon Sep 17 00:00:00 2001
+From: chenyuanbo <chenyuanbo@eswincomputing.com>
+Date: Wed, 24 Jul 2024 17:06:59 +0800
+Subject: [PATCH] S500 bringup
+
+1, added S500 platform
+2, modify fdt_timer_mtimer and fdt_ipi_mswi file to support S500
+cpu ip
+
+Signed-off-by: chen yuanbo <chenyuanbo@eswincomputing.com>
+---
+ lib/utils/ipi/fdt_ipi_mswi.c                  |   1 +
+ lib/utils/reset/fdt_reset_eswin.c             |  60 ++++
+ lib/utils/reset/objects.mk                    |   3 +
+ lib/utils/serial/uart8250.c                   |   4 +-
+ lib/utils/timer/fdt_timer_mtimer.c            |   1 +
+ platform/eswin/S500/config.mk                 |  39 +++
+ .../eswin/S500/include/platform_override.h    |  28 ++
+ platform/eswin/S500/objects.mk                |  12 +
+ platform/eswin/S500/platform.c                | 262 ++++++++++++++++++
+ .../S500/platform_override_modules.carray     |   8 +
+ 10 files changed, 417 insertions(+), 1 deletion(-)
+ create mode 100644 lib/utils/reset/fdt_reset_eswin.c
+ create mode 100644 platform/eswin/S500/config.mk
+ create mode 100644 platform/eswin/S500/include/platform_override.h
+ create mode 100644 platform/eswin/S500/objects.mk
+ create mode 100644 platform/eswin/S500/platform.c
+ create mode 100644 platform/eswin/S500/platform_override_modules.carray
+
+diff --git a/lib/utils/ipi/fdt_ipi_mswi.c b/lib/utils/ipi/fdt_ipi_mswi.c
+index 1f0fda7..770f22a 100644
+--- a/lib/utils/ipi/fdt_ipi_mswi.c
++++ b/lib/utils/ipi/fdt_ipi_mswi.c
+@@ -56,6 +56,7 @@ static unsigned long clint_offset = CLINT_MSWI_OFFSET;
+ static const struct fdt_match ipi_mswi_match[] = {
+ 	{ .compatible = "riscv,clint0", .data = &clint_offset },
+ 	{ .compatible = "sifive,clint0", .data = &clint_offset },
++	{ .compatible = "eswin,clint0", .data = &clint_offset },
+ 	{ .compatible = "riscv,aclint-mswi" },
+ 	{ },
+ };
+diff --git a/lib/utils/reset/fdt_reset_eswin.c b/lib/utils/reset/fdt_reset_eswin.c
+new file mode 100644
+index 0000000..8e58e97
+--- /dev/null
++++ b/lib/utils/reset/fdt_reset_eswin.c
+@@ -0,0 +1,60 @@
++/*
++ * SPDX-License-Identifier: BSD-2-Clause
++ * 
++ * Copyright 2024 Beijing ESWIN Computing Technology Co., Ltd.
++ * Author: chen yuanbo <chenyuanbo@eswincomputing.com>
++ */
++
++#include <libfdt.h>
++#include <sbi/riscv_io.h>
++#include <sbi/sbi_bitops.h>
++#include <sbi/sbi_hart.h>
++#include <sbi/sbi_scratch.h>
++#include <sbi/sbi_system.h>
++#include <sbi_utils/fdt/fdt_helper.h>
++#include <sbi_utils/reset/fdt_reset.h>
++
++static int eswin_system_reset_check(u32 type, u32 reason)
++{
++	return 1;
++}
++
++static void eswin_system_reset(u32 type, u32 reason)
++{
++	ebreak();
++}
++
++static struct sbi_system_reset_device eswin_reset = {
++	.name = "eswin_reset",
++	.system_reset_check = eswin_system_reset_check,
++	.system_reset = eswin_system_reset
++};
++
++static int eswin_reset_init(void *fdt, int nodeoff,
++				 const struct fdt_match *match)
++{
++	char *p;
++	const fdt64_t *val;
++	int len;
++
++	/* Delegate plic enable regs for S-mode */
++	val = fdt_getprop(fdt, nodeoff, "plic-delegate", &len);
++	if (len > 0 && val) {
++		p = (void *)(ulong)fdt64_to_cpu(*val);
++		writel(BIT(0), p);
++	}
++
++	sbi_system_reset_add_device(&eswin_reset);
++
++	return 0;
++}
++
++static const struct fdt_match eswin_reset_match[] = {
++	{ .compatible = "eswin,reset-sample" },
++	{ },
++};
++
++struct fdt_reset fdt_reset_eswin = {
++	.match_table = eswin_reset_match,
++	.init = eswin_reset_init
++};
+diff --git a/lib/utils/reset/objects.mk b/lib/utils/reset/objects.mk
+index 8cddcdf..7605e78 100644
+--- a/lib/utils/reset/objects.mk
++++ b/lib/utils/reset/objects.mk
+@@ -26,3 +26,6 @@ libsbiutils-objs-y += reset/fdt_reset_sunxi_wdt.o
+ carray-fdt_reset_drivers-y += fdt_reset_thead
+ libsbiutils-objs-y += reset/fdt_reset_thead.o
+ libsbiutils-objs-y += reset/fdt_reset_thead_asm.o
++
++carray-fdt_reset_drivers-y += fdt_reset_eswin
++libsbiutils-objs-y += reset/fdt_reset_eswin.o
+diff --git a/lib/utils/serial/uart8250.c b/lib/utils/serial/uart8250.c
+index 38ea11a..5e12f2d 100644
+--- a/lib/utils/serial/uart8250.c
++++ b/lib/utils/serial/uart8250.c
+@@ -118,7 +118,9 @@ int uart8250_init(unsigned long base, u32 in_freq, u32 baudrate, u32 reg_shift,
+ 	/* 8 bits, no parity, one stop bit */
+ 	set_reg(UART_LCR_OFFSET, 0x03);
+ 	/* Enable FIFO */
+-	set_reg(UART_FCR_OFFSET, 0x01);
++	//set_reg(UART_FCR_OFFSET, 0x01);
++	/* Disenable FIFO */
++	set_reg(UART_FCR_OFFSET, 0x00);
+ 	/* No modem control DTR RTS */
+ 	set_reg(UART_MCR_OFFSET, 0x00);
+ 	/* Clear line status */
+diff --git a/lib/utils/timer/fdt_timer_mtimer.c b/lib/utils/timer/fdt_timer_mtimer.c
+index 1ad8508..1c22a44 100644
+--- a/lib/utils/timer/fdt_timer_mtimer.c
++++ b/lib/utils/timer/fdt_timer_mtimer.c
+@@ -112,6 +112,7 @@ static unsigned long clint_offset = CLINT_MTIMER_OFFSET;
+ static const struct fdt_match timer_mtimer_match[] = {
+ 	{ .compatible = "riscv,clint0", .data = &clint_offset },
+ 	{ .compatible = "sifive,clint0", .data = &clint_offset },
++	{ .compatible = "eswin,clint0", .data = &clint_offset },
+ 	{ .compatible = "riscv,aclint-mtimer" },
+ 	{ },
+ };
+diff --git a/platform/eswin/S500/config.mk b/platform/eswin/S500/config.mk
+new file mode 100644
+index 0000000..eb28e38
+--- /dev/null
++++ b/platform/eswin/S500/config.mk
+@@ -0,0 +1,39 @@
++#
++# SPDX-License-Identifier: BSD-2-Clause
++#
++# Copyright 2024 Beijing ESWIN Computing Technology Co., Ltd.
++#
++# Authors:
++#   chen yuanbo <chenyuanbo@eswincomputing.com>
++
++# Compiler flags
++platform-cppflags-y =
++platform-cflags-y =
++platform-asflags-y =
++platform-ldflags-y =
++
++# Command for platform specific "make run"
++platform-runcmd = qemu-system-riscv$(PLATFORM_RISCV_XLEN) -M virt -m 256M \
++  -nographic -bios $(build_dir)/platform/eswin/S500/firmware/fw_payload.elf
++
++# Blobs to build
++FW_TEXT_START=0x80000000
++FW_PAYLOAD=y
++ifeq ($(BUILD_OPENSBI), y)
++  $(warning BUILD_OPENSBI = $(BUILD_OPENSBI))
++  FW_DYNAMIC=y
++  FW_JUMP=n
++  FW_JUMP_ADDR=0x80400000
++  FW_PAYLOAD_OFFSET=0x400000
++else
++  ifeq ($(PLATFORM_RISCV_XLEN), 32)
++    # This needs to be 4MB aligned for 32-bit system
++    FW_PAYLOAD_OFFSET=0x400000
++  else
++    # This needs to be 1MB aligned for 64-bit system
++    FW_PAYLOAD_OFFSET=0x100000
++  endif
++endif
++FW_JUMP_FDT_ADDR=0x90000000
++#FW_PAYLOAD_FDT_ADDR=0x90000000
++
+diff --git a/platform/eswin/S500/include/platform_override.h b/platform/eswin/S500/include/platform_override.h
+new file mode 100644
+index 0000000..dab5e8b
+--- /dev/null
++++ b/platform/eswin/S500/include/platform_override.h
+@@ -0,0 +1,28 @@
++/*
++ * SPDX-License-Identifier: BSD-2-Clause
++ *
++ * Copyright (c) 2020 Western Digital Corporation or its affiliates.
++ * Copyright 2024 Beijing ESWIN Computing Technology Co., Ltd.
++ *
++ * Authors:
++ *   Anup Patel <anup.patel@wdc.com>
++ *   chen yuanbo <chenyuanbo@eswincomputing.com>
++ */
++
++#ifndef __PLATFORM_OVERRIDE_H__
++#define __PLATFORM_OVERRIDE_H__
++
++#include <sbi/sbi_types.h>
++
++struct platform_override {
++	const struct fdt_match *match_table;
++	u64 (*features)(const struct fdt_match *match);
++	u64 (*tlbr_flush_limit)(const struct fdt_match *match);
++	int (*early_init)(bool cold_boot, const struct fdt_match *match);
++	int (*final_init)(bool cold_boot, const struct fdt_match *match);
++	void (*early_exit)(const struct fdt_match *match);
++	void (*final_exit)(const struct fdt_match *match);
++	int (*fdt_fixup)(void *fdt, const struct fdt_match *match);
++};
++
++#endif
+diff --git a/platform/eswin/S500/objects.mk b/platform/eswin/S500/objects.mk
+new file mode 100644
+index 0000000..1740a1f
+--- /dev/null
++++ b/platform/eswin/S500/objects.mk
+@@ -0,0 +1,12 @@
++#
++# SPDX-License-Identifier: BSD-2-Clause
++#
++# Copyright (c) 2020 Western Digital Corporation or its affiliates.
++# Copyright 2024 Beijing ESWIN Computing Technology Co., Ltd.
++#
++# Authors:
++#   Anup Patel <anup.patel@wdc.com>
++#   chen yuanbo <chenyuanbo@eswincomputing.com>
++
++platform-objs-y += platform.o
++platform-objs-y += platform_override_modules.o
+diff --git a/platform/eswin/S500/platform.c b/platform/eswin/S500/platform.c
+new file mode 100644
+index 0000000..16e54d6
+--- /dev/null
++++ b/platform/eswin/S500/platform.c
+@@ -0,0 +1,262 @@
++/*
++ * SPDX-License-Identifier: BSD-2-Clause
++ *
++ * Copyright (c) 2020 Western Digital Corporation or its affiliates.
++ * Copyright 2024 Beijing ESWIN Computing Technology Co., Ltd.
++ * Authors:
++ *   Anup Patel <anup.patel@wdc.com>
++ *   chen yuanbo <chenyuanbo@eswincomputing.com>
++ */
++#include <sbi/riscv_io.h>
++#include <libfdt.h>
++#include <platform_override.h>
++#include <sbi/riscv_asm.h>
++#include <sbi/sbi_hartmask.h>
++#include <sbi/sbi_platform.h>
++#include <sbi/sbi_string.h>
++#include <sbi_utils/fdt/fdt_domain.h>
++#include <sbi_utils/fdt/fdt_fixup.h>
++#include <sbi_utils/fdt/fdt_helper.h>
++#include <sbi_utils/fdt/fdt_pmu.h>
++#include <sbi_utils/irqchip/fdt_irqchip.h>
++#include <sbi_utils/irqchip/imsic.h>
++#include <sbi_utils/serial/fdt_serial.h>
++#include <sbi_utils/timer/fdt_timer.h>
++#include <sbi_utils/ipi/fdt_ipi.h>
++#include <sbi_utils/reset/fdt_reset.h>
++
++/* List of platform override modules generated at compile time */
++extern const struct platform_override *platform_override_modules[];
++extern unsigned long platform_override_modules_size;
++
++static const struct platform_override *generic_plat = NULL;
++static const struct fdt_match *generic_plat_match = NULL;
++
++static void fw_platform_lookup_special(void *fdt, int root_offset)
++{
++	int pos, noff;
++	const struct platform_override *plat;
++	const struct fdt_match *match;
++
++	for (pos = 0; pos < platform_override_modules_size; pos++) {
++		plat = platform_override_modules[pos];
++		if (!plat->match_table)
++			continue;
++
++		noff = fdt_find_match(fdt, -1, plat->match_table, &match);
++		if (noff < 0)
++			continue;
++
++		generic_plat = plat;
++		generic_plat_match = match;
++		break;
++	}
++}
++
++extern struct sbi_platform platform;
++static bool platform_has_mlevel_imsic = false;
++static u32 generic_hart_index2id[SBI_HARTMASK_MAX_BITS] = { 0 };
++
++/*
++ * The fw_platform_init() function is called very early on the boot HART
++ * OpenSBI reference firmwares so that platform specific code get chance
++ * to update "platform" instance before it is used.
++ *
++ * The arguments passed to fw_platform_init() function are boot time state
++ * of A0 to A4 register. The "arg0" will be boot HART id and "arg1" will
++ * be address of FDT passed by previous booting stage.
++ *
++ * The return value of fw_platform_init() function is the FDT location. If
++ * FDT is unchanged (or FDT is modified in-place) then fw_platform_init()
++ * can always return the original FDT location (i.e. 'arg1') unmodified.
++ */
++
++#define CMO_EN  ((3 << 4) | (1 << 6) |(1 << 7))  // CBIE | CBCFE | CBCE
++
++void xenvcfg(void)
++{
++    unsigned char senvcfg = 0;
++    __asm__ volatile ("csrr %0, senvcfg" :: "r"(senvcfg));
++    senvcfg |= CMO_EN;//cbie,cfcbe,xxx
++    __asm__ volatile("csrw senvcfg,%0" :"=r"(senvcfg));
++}
++
++unsigned long fw_platform_init(unsigned long arg0, unsigned long arg1,
++				unsigned long arg2, unsigned long arg3,
++				unsigned long arg4)
++{
++	const char *model;
++	void *fdt = (void *)arg1;
++	u32 hartid, hart_count = 0;
++	int rc, root_offset, cpus_offset, cpu_offset, len;
++
++	root_offset = fdt_path_offset(fdt, "/");
++	if (root_offset < 0)
++		goto fail;
++
++	fw_platform_lookup_special(fdt, root_offset);
++
++	model = fdt_getprop(fdt, root_offset, "model", &len);
++	if (model)
++		sbi_strncpy(platform.name, model, sizeof(platform.name) - 1);
++
++	if (generic_plat && generic_plat->features)
++		platform.features = generic_plat->features(generic_plat_match);
++
++	cpus_offset = fdt_path_offset(fdt, "/cpus");
++	if (cpus_offset < 0)
++		goto fail;
++
++	fdt_for_each_subnode(cpu_offset, fdt, cpus_offset) {
++		rc = fdt_parse_hart_id(fdt, cpu_offset, &hartid);
++		if (rc)
++			continue;
++
++		if (SBI_HARTMASK_MAX_BITS <= hartid)
++			continue;
++
++		if (!fdt_node_is_enabled(fdt, cpu_offset))
++			continue;
++
++		generic_hart_index2id[hart_count++] = hartid;
++	}
++
++	platform.hart_count = hart_count;
++
++	platform_has_mlevel_imsic = fdt_check_imsic_mlevel(fdt);
++
++	/* Return original FDT pointer */
++	return arg1;
++
++fail:
++	while (1)
++		wfi();
++}
++
++static int generic_nascent_init(void)
++{
++	if (platform_has_mlevel_imsic)
++		imsic_local_irqchip_init();
++	return 0;
++}
++
++static int generic_early_init(bool cold_boot)
++{
++	if (!generic_plat || !generic_plat->early_init)
++		return 0;
++
++	return generic_plat->early_init(cold_boot, generic_plat_match);
++}
++
++static int generic_final_init(bool cold_boot)
++{
++	void *fdt;
++	int rc;
++
++	if (cold_boot)
++		fdt_reset_init();
++
++	if (generic_plat && generic_plat->final_init) {
++		rc = generic_plat->final_init(cold_boot, generic_plat_match);
++		if (rc)
++			return rc;
++	}
++
++	if (!cold_boot)
++		return 0;
++
++	fdt = fdt_get_address();
++
++	fdt_cpu_fixup(fdt);
++	fdt_fixups(fdt);
++	fdt_domain_fixup(fdt);
++
++	if (generic_plat && generic_plat->fdt_fixup) {
++		rc = generic_plat->fdt_fixup(fdt, generic_plat_match);
++		if (rc)
++			return rc;
++	}
++
++	return 0;
++}
++
++static void generic_early_exit(void)
++{
++	if (generic_plat && generic_plat->early_exit)
++		generic_plat->early_exit(generic_plat_match);
++}
++
++static void generic_final_exit(void)
++{
++	if (generic_plat && generic_plat->final_exit)
++		generic_plat->final_exit(generic_plat_match);
++}
++
++static int generic_domains_init(void)
++{
++	return fdt_domains_populate(fdt_get_address());
++}
++
++static u64 generic_tlbr_flush_limit(void)
++{
++	if (generic_plat && generic_plat->tlbr_flush_limit)
++		return generic_plat->tlbr_flush_limit(generic_plat_match);
++	return SBI_PLATFORM_TLB_RANGE_FLUSH_LIMIT_DEFAULT;
++}
++
++static int generic_pmu_init(void)
++{
++	return fdt_pmu_setup(fdt_get_address());
++}
++
++static uint64_t generic_pmu_xlate_to_mhpmevent(uint32_t event_idx,
++					       uint64_t data)
++{
++	uint64_t evt_val = 0;
++
++	/* data is valid only for raw events and is equal to event selector */
++	if (event_idx == SBI_PMU_EVENT_RAW_IDX)
++		evt_val = data;
++	else {
++		/**
++		 * Generic platform follows the SBI specification recommendation
++		 * i.e. zero extended event_idx is used as mhpmevent value for
++		 * hardware general/cache events if platform does't define one.
++		 */
++		evt_val = fdt_pmu_get_select_value(event_idx);
++		if (!evt_val)
++			evt_val = (uint64_t)event_idx;
++	}
++
++	return evt_val;
++}
++
++const struct sbi_platform_operations platform_ops = {
++	.nascent_init		= generic_nascent_init,
++	.early_init		= generic_early_init,
++	.final_init		= generic_final_init,
++	.early_exit		= generic_early_exit,
++	.final_exit		= generic_final_exit,
++	.domains_init		= generic_domains_init,
++	.console_init		= fdt_serial_init,
++	.irqchip_init		= fdt_irqchip_init,
++	.irqchip_exit		= fdt_irqchip_exit,
++	.ipi_init		= fdt_ipi_init,
++	.ipi_exit		= fdt_ipi_exit,
++	.pmu_init		= generic_pmu_init,
++	.pmu_xlate_to_mhpmevent = generic_pmu_xlate_to_mhpmevent,
++	.get_tlbr_flush_limit	= generic_tlbr_flush_limit,
++	.timer_init		= fdt_timer_init,
++	.timer_exit		= fdt_timer_exit,
++};
++
++struct sbi_platform platform = {
++	.opensbi_version	= OPENSBI_VERSION,
++	.platform_version	= SBI_PLATFORM_VERSION(0x0, 0x01),
++	.name			= "Generic",
++	.features		= SBI_PLATFORM_DEFAULT_FEATURES,
++	.hart_count		= SBI_HARTMASK_MAX_BITS,
++	.hart_index2id		= generic_hart_index2id,
++	.hart_stack_size	= SBI_PLATFORM_DEFAULT_HART_STACK_SIZE,
++	.platform_ops_addr	= (unsigned long)&platform_ops
++};
+diff --git a/platform/eswin/S500/platform_override_modules.carray b/platform/eswin/S500/platform_override_modules.carray
+new file mode 100644
+index 0000000..c1ac8b2
+--- /dev/null
++++ b/platform/eswin/S500/platform_override_modules.carray
+@@ -0,0 +1,8 @@
++//SPDX-License-Identifier: BSD-2-Clause
++/*
++ * Copyright 2024 Beijing ESWIN Computing Technology Co., Ltd.
++ *
++ */
++HEADER: platform_override.h
++TYPE: const struct platform_override
++NAME: platform_override_modules
+-- 
+2.17.1
+

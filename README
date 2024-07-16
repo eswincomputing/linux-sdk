@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: GPL-2.0
+# 
+# Copyright 2024 Beijing ESWIN Computing Technology Co., Ltd. 
+#
+ 
+This README file contains information on the contents of the meta-eswin layer.
+
+Please see the corresponding sections below for details.
+
+Download Dependencies projects
+=======
+
+git submodule update --init
+
+Preparation
+=======
+
+Please submit any patches against the meta-eswin layer to the Maintainer: chenyuanbo <chenyuanbo@eswincomputing.com>
+
+note
+=======
+
+If you use the software in China, it is recommended to turn off network check for network reasons
+
+openembedded-core/meta/conf/distro/include/default-distrovars.inc
+-CONNECTIVITY_CHECK_URIS ?= "https://yoctoproject.org/connectivity.html"
++#CONNECTIVITY_CHECK_URIS ?= "https://yoctoproject.org/connectivity.html"
+
+Table of Contents
+=================
+
+  1. Environment
+
+     Run 'source meta-eswin/setup.sh'
+ 
+  2. Build
+    
+     Run 'MACHINE=S500 PLAT=s2c bitbake eswin-image-boot"
+
+     more information connect Beijing ESWIN Computing Technology Co., LTD
+
+  3. Clean
+
+     Run 'MACHINE=S500 PLAT=s2c bitbake eswin-image-boot -c clean'
+
+  4. Load
+
+     The generated file can be found in build/tmp-glibc/deploy/images/S500/ directory after the compilation 
+is complete,then Download the image to the appropriate location
+
+     fw_payload.bin    -> 0x8_0000000 (firmware, u-boot payloaded opensbi)
+     Image             -> 0x8_0200000 (linux kernel)
+     S500-s2c.dtb      -> 0x9_0000000 (device tree)
+     eswin-image-boot-S500.rootfs.cpio.gz    -> 0x9_1000000 (initramfs)
+
+
+=================================================
+
